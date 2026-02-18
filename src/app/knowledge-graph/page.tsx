@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { nodes, edges, domainColors, type ClinicalDomain, type KGNode, type KGEdge, type EvidenceGrade } from '@/lib/knowledge-graph'
 import { cn } from '@/lib/utils'
 
@@ -17,13 +17,20 @@ interface SimNode {
   fy?: number
 }
 
-// Canvas dimensions constant
+// Performance constants
 const CANVAS_WIDTH = 800
 const CANVAS_HEIGHT = 600
+const SIMULATION_ALPHA = 0.8
+const REPULSION_STRENGTH = 800
+const EDGE_TARGET_LENGTH = 120
+const EDGE_STRENGTH = 0.005
+const CENTER_GRAVITY = 0.001
+const NODE_RADIUS_THRESHOLD = 225 // 15^2 for hit detection
 
 export default function KnowledgeGraphPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const [simNodes, setSimNodes] = useState<SimNode[]>([])
+  const simNodesRef = useRef<SimNode[]>([])
+  const [renderTrigger, setRenderTrigger] = useState(0)
   const [selectedNode, setSelectedNode] = useState<KGNode | null>(null)
   const [selectedEdge, setSelectedEdge] = useState<KGEdge | null>(null)
   const [domainFilter, setDomainFilter] = useState<ClinicalDomain | 'All'>('All')
@@ -31,9 +38,11 @@ export default function KnowledgeGraphPage() {
   const [searchTerm, setSearchTerm] = useState('')
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
   const animRef = useRef<number>(0)
+  const frameCountRef = useRef(0)
+  const lastRenderRef = useRef(0)
 
-  // Define getFilteredEdges first so it can be used in effects
-  const getFilteredEdges = useCallback(() => {
+  // Memoize filtered edges for performance
+  const filteredEdges = useMemo(() => {
     return edges.filter(e => {
       if (domainFilter !== 'All' && e.domain !== domainFilter) return false
       if (gradeFilter !== 'All' && e.evidenceGrade !== gradeFilter) return false
@@ -47,11 +56,19 @@ export default function KnowledgeGraphPage() {
     })
   }, [domainFilter, gradeFilter, searchTerm])
 
+  // Create node lookup map for O(1) access
+  const nodeMap = useMemo(() => {
+    const map = new Map<string, SimNode>()
+    simNodesRef.current.forEach(n => map.set(n.id, n))
+    return map
+  }, [renderTrigger])
+
   // Initialize simulation
   useEffect(() => {
+    const domainKeys = Object.keys(domainColors)
     const initialNodes: SimNode[] = nodes.map((n, i) => {
       const angle = (i / nodes.length) * 2 * Math.PI
-      const domainIndex = Object.keys(domainColors).indexOf(n.domain)
+      const domainIndex = domainKeys.indexOf(n.domain)
       const radius = 150 + domainIndex * 40
       return {
         id: n.id,
@@ -64,103 +81,138 @@ export default function KnowledgeGraphPage() {
         vy: 0,
       }
     })
-    setSimNodes(initialNodes)
+    simNodesRef.current = initialNodes
+    setRenderTrigger(1)
   }, [])
 
-  // Force simulation
+  // Optimized force simulation with throttled state updates
   useEffect(() => {
-    if (simNodes.length === 0) return
+    if (simNodesRef.current.length === 0) return
 
-    const nodesCopy = simNodes.map(n => ({ ...n }))
+    const nodesCopy = simNodesRef.current
+
+    // Build node index map for O(1) lookups
+    const nodeIndex = new Map<string, number>()
+    for (let i = 0; i < nodesCopy.length; i++) {
+      nodeIndex.set(nodesCopy[i].id, i)
+    }
 
     const simulate = () => {
-      // Center gravity
-      nodesCopy.forEach(n => {
-        n.vx += (CANVAS_WIDTH / 2 - n.x) * 0.001
-        n.vy += (CANVAS_HEIGHT / 2 - n.y) * 0.001
-      })
+      frameCountRef.current++
 
-      // Repulsion
+      // Center gravity - vectorized
       for (let i = 0; i < nodesCopy.length; i++) {
+        const n = nodesCopy[i]
+        n.vx += (CANVAS_WIDTH / 2 - n.x) * CENTER_GRAVITY
+        n.vy += (CANVAS_HEIGHT / 2 - n.y) * CENTER_GRAVITY
+      }
+
+      // Repulsion - O(n²) but optimized with early exit
+      for (let i = 0; i < nodesCopy.length; i++) {
+        const ni = nodesCopy[i]
         for (let j = i + 1; j < nodesCopy.length; j++) {
-          const dx = nodesCopy[j].x - nodesCopy[i].x
-          const dy = nodesCopy[j].y - nodesCopy[i].y
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1
-          const force = 800 / (dist * dist)
+          const nj = nodesCopy[j]
+          const dx = nj.x - ni.x
+          const dy = nj.y - ni.y
+          const distSq = dx * dx + dy * dy
+          if (distSq > 40000) continue // Skip if too far apart (200px)
+          const dist = Math.sqrt(distSq) || 1
+          const force = REPULSION_STRENGTH / distSq
           const fx = (dx / dist) * force
           const fy = (dy / dist) * force
-          nodesCopy[i].vx -= fx
-          nodesCopy[i].vy -= fy
-          nodesCopy[j].vx += fx
-          nodesCopy[j].vy += fy
+          ni.vx -= fx
+          ni.vy -= fy
+          nj.vx += fx
+          nj.vy += fy
         }
       }
 
-      // Edge attraction
-      const filteredEdges = getFilteredEdges()
-      filteredEdges.forEach(edge => {
-        const source = nodesCopy.find(n => n.id === edge.source)
-        const target = nodesCopy.find(n => n.id === edge.target)
-        if (!source || !target) return
+      // Edge attraction - use index for O(1) lookup
+      for (let i = 0; i < filteredEdges.length; i++) {
+        const edge = filteredEdges[i]
+        const srcIdx = nodeIndex.get(edge.source)
+        const tgtIdx = nodeIndex.get(edge.target)
+        if (srcIdx === undefined || tgtIdx === undefined) continue
+        const source = nodesCopy[srcIdx]
+        const target = nodesCopy[tgtIdx]
         const dx = target.x - source.x
         const dy = target.y - source.y
         const dist = Math.sqrt(dx * dx + dy * dy) || 1
-        const force = (dist - 120) * 0.005
+        const force = (dist - EDGE_TARGET_LENGTH) * EDGE_STRENGTH
         const fx = (dx / dist) * force
         const fy = (dy / dist) * force
         source.vx += fx
         source.vy += fy
         target.vx -= fx
         target.vy -= fy
-      })
+      }
 
-      // Update positions
-      nodesCopy.forEach(n => {
+      // Update positions with bounds checking
+      for (let i = 0; i < nodesCopy.length; i++) {
+        const n = nodesCopy[i]
         if (n.fx !== undefined) { n.x = n.fx; n.vx = 0 }
         else {
-          n.vx *= 0.8
+          n.vx *= SIMULATION_ALPHA
           n.x += n.vx
           n.x = Math.max(30, Math.min(CANVAS_WIDTH - 30, n.x))
         }
         if (n.fy !== undefined) { n.y = n.fy; n.vy = 0 }
         else {
-          n.vy *= 0.8
+          n.vy *= SIMULATION_ALPHA
           n.y += n.vy
           n.y = Math.max(30, Math.min(CANVAS_HEIGHT - 30, n.y))
         }
-      })
+      }
 
-      setSimNodes([...nodesCopy])
+      // Throttle React state updates to every 2 frames for smoother performance
+      if (frameCountRef.current % 2 === 0) {
+        setRenderTrigger(prev => prev + 1)
+      }
+
       animRef.current = requestAnimationFrame(simulate)
     }
 
     animRef.current = requestAnimationFrame(simulate)
     return () => cancelAnimationFrame(animRef.current)
-  }, [simNodes.length, getFilteredEdges])
+  }, [filteredEdges])
 
-  // Canvas rendering
+  // Connected nodes set for filtering display
+  const connectedNodes = useMemo(() => {
+    const set = new Set<string>()
+    filteredEdges.forEach(e => { set.add(e.source); set.add(e.target) })
+    return set
+  }, [filteredEdges])
+
+  // Canvas rendering - optimized with direct ref access
   useEffect(() => {
     const canvas = canvasRef.current
+    const simNodes = simNodesRef.current
     if (!canvas || simNodes.length === 0) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
+    // Only set canvas size once
     const dpr = window.devicePixelRatio || 1
-    canvas.width = CANVAS_WIDTH * dpr
-    canvas.height = CANVAS_HEIGHT * dpr
-    ctx.scale(dpr, dpr)
+    if (canvas.width !== CANVAS_WIDTH * dpr) {
+      canvas.width = CANVAS_WIDTH * dpr
+      canvas.height = CANVAS_HEIGHT * dpr
+      ctx.scale(dpr, dpr)
+    }
 
     ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT)
 
-    const filteredEdges = getFilteredEdges()
-    const connectedNodes = new Set<string>()
-    filteredEdges.forEach(e => { connectedNodes.add(e.source); connectedNodes.add(e.target) })
+    // Build node lookup for O(1) access
+    const nodeLookup = new Map<string, SimNode>()
+    for (let i = 0; i < simNodes.length; i++) {
+      nodeLookup.set(simNodes[i].id, simNodes[i])
+    }
 
-    // Draw edges
-    filteredEdges.forEach(edge => {
-      const source = simNodes.find(n => n.id === edge.source)
-      const target = simNodes.find(n => n.id === edge.target)
-      if (!source || !target) return
+    // Draw edges - batch similar operations
+    for (let i = 0; i < filteredEdges.length; i++) {
+      const edge = filteredEdges[i]
+      const source = nodeLookup.get(edge.source)
+      const target = nodeLookup.get(edge.target)
+      if (!source || !target) continue
 
       const isHighlighted = hoveredNode === edge.source || hoveredNode === edge.target ||
         selectedNode?.id === edge.source || selectedNode?.id === edge.target
@@ -174,7 +226,7 @@ export default function KnowledgeGraphPage() {
       ctx.lineWidth = isHighlighted ? Math.abs(edge.weight) * 6 + 1 : Math.abs(edge.weight) * 3 + 0.5
       ctx.stroke()
 
-      // Arrow
+      // Arrow for highlighted edges
       if (isHighlighted) {
         const angle = Math.atan2(target.y - source.y, target.x - source.x)
         const midX = (source.x + target.x) / 2
@@ -186,18 +238,19 @@ export default function KnowledgeGraphPage() {
         ctx.fillStyle = edge.weight > 0 ? '#ef4444' : '#22c55e'
         ctx.fill()
       }
-    })
+    }
 
     // Draw nodes
-    simNodes.forEach(node => {
-      if (domainFilter !== 'All' && !connectedNodes.has(node.id) && node.domain !== domainFilter) return
+    for (let i = 0; i < simNodes.length; i++) {
+      const node = simNodes[i]
+      if (domainFilter !== 'All' && !connectedNodes.has(node.id) && node.domain !== domainFilter) continue
 
       const isHovered = hoveredNode === node.id
       const isSelected = selectedNode?.id === node.id
       const color = domainColors[node.domain] || '#94a3b8'
       const radius = node.type === 'disease' ? 14 : node.type === 'medication' ? 10 : 12
 
-      // Glow
+      // Glow effect for hover/selected
       if (isHovered || isSelected) {
         ctx.beginPath()
         ctx.arc(node.x, node.y, radius + 6, 0, 2 * Math.PI)
@@ -205,6 +258,7 @@ export default function KnowledgeGraphPage() {
         ctx.fill()
       }
 
+      // Node circle
       ctx.beginPath()
       ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI)
       ctx.fillStyle = isHovered || isSelected ? color : `${color}cc`
@@ -218,45 +272,54 @@ export default function KnowledgeGraphPage() {
       ctx.font = `${isHovered || isSelected ? 'bold ' : ''}${isHovered || isSelected ? 11 : 9}px Inter, sans-serif`
       ctx.textAlign = 'center'
       ctx.fillText(node.label, node.x, node.y + radius + 14)
-    })
-  }, [simNodes, hoveredNode, selectedNode, domainFilter, gradeFilter, searchTerm, getFilteredEdges])
+    }
+  }, [renderTrigger, hoveredNode, selectedNode, domainFilter, filteredEdges, connectedNodes])
 
-  // Mouse handlers
-  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  // Mouse handlers - use refs for better performance
+  const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = canvasRef.current?.getBoundingClientRect()
     if (!rect) return
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
+    const simNodes = simNodesRef.current
 
     // Check node click
-    for (const node of simNodes) {
+    for (let i = 0; i < simNodes.length; i++) {
+      const node = simNodes[i]
       const dx = node.x - x
       const dy = node.y - y
-      if (dx * dx + dy * dy < 225) {
+      if (dx * dx + dy * dy < NODE_RADIUS_THRESHOLD) {
         const kgNode = nodes.find(n => n.id === node.id)
         if (kgNode) {
-          setSelectedNode(selectedNode?.id === kgNode.id ? null : kgNode)
+          setSelectedNode(prev => prev?.id === kgNode.id ? null : kgNode)
           setSelectedEdge(null)
         }
         return
       }
     }
 
+    // Build quick lookup for edge hit testing
+    const nodeLookup = new Map<string, SimNode>()
+    for (let i = 0; i < simNodes.length; i++) {
+      nodeLookup.set(simNodes[i].id, simNodes[i])
+    }
+
     // Check edge click
-    const filteredEdges = getFilteredEdges()
-    for (const edge of filteredEdges) {
-      const src = simNodes.find(n => n.id === edge.source)
-      const tgt = simNodes.find(n => n.id === edge.target)
+    for (let i = 0; i < filteredEdges.length; i++) {
+      const edge = filteredEdges[i]
+      const src = nodeLookup.get(edge.source)
+      const tgt = nodeLookup.get(edge.target)
       if (!src || !tgt) continue
       const dx = tgt.x - src.x
       const dy = tgt.y - src.y
-      const len = Math.sqrt(dx * dx + dy * dy) || 1
-      const t = Math.max(0, Math.min(1, ((x - src.x) * dx + (y - src.y) * dy) / (len * len)))
+      const lenSq = dx * dx + dy * dy
+      if (lenSq === 0) continue
+      const t = Math.max(0, Math.min(1, ((x - src.x) * dx + (y - src.y) * dy) / lenSq))
       const projX = src.x + t * dx
       const projY = src.y + t * dy
-      const dist = Math.sqrt((x - projX) ** 2 + (y - projY) ** 2)
-      if (dist < 8) {
-        setSelectedEdge(selectedEdge?.id === edge.id ? null : edge)
+      const distSq = (x - projX) ** 2 + (y - projY) ** 2
+      if (distSq < 64) { // 8^2
+        setSelectedEdge(prev => prev?.id === edge.id ? null : edge)
         setSelectedNode(null)
         return
       }
@@ -264,26 +327,28 @@ export default function KnowledgeGraphPage() {
 
     setSelectedNode(null)
     setSelectedEdge(null)
-  }
+  }, [filteredEdges])
 
-  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  // Throttled mouse move handler
+  const handleCanvasMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = canvasRef.current?.getBoundingClientRect()
     if (!rect) return
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
+    const simNodes = simNodesRef.current
 
-    let found = false
-    for (const node of simNodes) {
+    let found: string | null = null
+    for (let i = 0; i < simNodes.length; i++) {
+      const node = simNodes[i]
       const dx = node.x - x
       const dy = node.y - y
-      if (dx * dx + dy * dy < 225) {
-        setHoveredNode(node.id)
-        found = true
+      if (dx * dx + dy * dy < NODE_RADIUS_THRESHOLD) {
+        found = node.id
         break
       }
     }
-    if (!found) setHoveredNode(null)
-  }
+    setHoveredNode(found)
+  }, [])
 
   const allDomains = Object.keys(domainColors) as ClinicalDomain[]
 
