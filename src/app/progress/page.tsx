@@ -2,13 +2,61 @@
 
 import { useState, useEffect } from 'react'
 import { type PatientProfile, computeAllRisksWithCI, type FullRiskResult, getRiskColor, getRiskLevel } from '@/lib/ncd-cie-engine'
-import { loadPatients, getActivePatientId, loadHistory, addVisit } from '@/lib/store'
+import { loadPatients, getActivePatientId, loadHistory, addVisit, type LabVisit } from '@/lib/store'
 import { formatPercent, cn } from '@/lib/utils'
 
 interface HistoryPoint {
   date: string
   risks: FullRiskResult
   profile: PatientProfile
+}
+
+// Generate synthetic demo visits showing improvement over time
+function generateDemoHistory(patient: PatientProfile): LabVisit[] {
+  const now = new Date()
+  const visits: LabVisit[] = []
+
+  // Generate 6 visits over 5 months (showing gradual improvement)
+  for (let i = 0; i < 6; i++) {
+    const date = new Date(now)
+    date.setMonth(date.getMonth() - (5 - i))
+
+    // Simulate progression: older visits had worse values, improving over time
+    const progressFactor = (5 - i) / 5 // 1.0 at oldest, 0 at current
+
+    const visitProfile: PatientProfile = {
+      ...patient,
+      // Blood pressure improves over time
+      sbp: Math.round(patient.sbp + progressFactor * 15),
+      dbp: Math.round(patient.dbp + progressFactor * 8),
+      // Lipids improve
+      ldl: Math.round(patient.ldl + progressFactor * 20),
+      hdl: Math.round(patient.hdl - progressFactor * 5),
+      tc: Math.round(patient.tc + progressFactor * 25),
+      tg: Math.round(patient.tg + progressFactor * 30),
+      // Glycemic markers improve
+      hba1c: +(patient.hba1c + progressFactor * 0.5).toFixed(1),
+      fpg: Math.round(patient.fpg + progressFactor * 15),
+      // BMI improves
+      bmi: +(patient.bmi + progressFactor * 1.5).toFixed(1),
+      // eGFR may have been lower
+      egfr: Math.round(patient.egfr - progressFactor * 8),
+      // Lifestyle improved over time
+      exercise: Math.max(0, Math.round(patient.exercise - progressFactor * 2)),
+      diet: Math.max(0, +(patient.diet - progressFactor * 0.2).toFixed(1)),
+      // Medications may have been added over time (later visits have more meds)
+      statin: i >= 3 ? patient.statin : 0,
+      htn_med: i >= 2 ? patient.htn_med : 0,
+      metformin: i >= 4 ? patient.metformin : 0,
+    }
+
+    visits.push({
+      date: date.toISOString().split('T')[0],
+      profile: visitProfile,
+    })
+  }
+
+  return visits
 }
 
 export default function ProgressPage() {
@@ -23,14 +71,20 @@ export default function ProgressPage() {
     setPatient(active)
 
     // Load visit history
-    const rawHistory = loadHistory(active.id)
+    let rawHistory = loadHistory(active.id)
+
+    // If no history exists for demo patients, generate synthetic visits
+    if (rawHistory.length === 0 && active.id.startsWith('demo-')) {
+      rawHistory = generateDemoHistory(active)
+    }
+
     const historyWithRisks: HistoryPoint[] = rawHistory.map(v => ({
       date: v.date,
       risks: computeAllRisksWithCI(v.profile),
       profile: v.profile,
     }))
 
-    // Add current as latest if no history
+    // Add current as latest if still no history
     if (historyWithRisks.length === 0) {
       historyWithRisks.push({
         date: new Date().toISOString().split('T')[0],
