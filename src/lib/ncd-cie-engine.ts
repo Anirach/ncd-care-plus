@@ -376,7 +376,7 @@ export function whatIfIntervention(
   }
 
   const risks = computeAllRisksWithCI(interventionProfile)
-  return { interventionProfile, risks, deltas, activatedEdges: [...new Set(activatedEdges)] }
+  return { interventionProfile, risks, deltas, activatedEdges: Array.from(new Set(activatedEdges)) }
 }
 
 export function getRiskColor(risk: number): string {

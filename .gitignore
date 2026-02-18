@@ -4,3 +4,4 @@ out/
 *.tgz
 .env*
 test.txt
+.vercel
