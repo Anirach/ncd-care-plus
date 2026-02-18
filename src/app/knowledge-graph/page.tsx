@@ -7,9 +7,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button'
 import { Filter, ZoomIn, ZoomOut, RotateCcw, Info, Layers, Network, Search } from 'lucide-react'
 
-// Canvas dimensions (increased for better spacing)
-const CANVAS_WIDTH = 1200
-const CANVAS_HEIGHT = 800
+// Canvas dimensions
+const CANVAS_WIDTH = 1000
+const CANVAS_HEIGHT = 700
 
 // Force simulation configuration
 const FORCE_CONFIG = {
@@ -484,12 +484,12 @@ export default function KnowledgeGraphPage() {
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-4 gap-6">
+      <div className="flex flex-col lg:flex-row gap-4">
         {/* Graph */}
-        <div className="lg:col-span-3">
+        <div className="flex-1 min-w-0">
           <Card className="overflow-hidden">
             <CardContent className="p-0">
-              <div className="relative" style={{ height: '650px' }}>
+              <div className="relative" style={{ height: '600px' }}>
                 <svg
                   width="100%"
                   height="100%"
@@ -675,7 +675,7 @@ export default function KnowledgeGraphPage() {
         </div>
 
         {/* Sidebar */}
-        <div className="lg:col-span-1 space-y-4">
+        <div className="w-full lg:w-72 flex-shrink-0 space-y-4">
           {/* Legend */}
           <Card>
             <CardHeader className="pb-3">
