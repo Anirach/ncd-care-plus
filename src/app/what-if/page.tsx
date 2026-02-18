@@ -1,11 +1,21 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { type PatientProfile, computeAllRisksWithCI, whatIfIntervention, type FullRiskResult, type CascadeResult, getRiskColor, biomarkerRanges } from '@/lib/ncd-cie-engine'
 import { edges as graphEdges, getNode } from '@/lib/knowledge-graph'
 import { loadPatients, getActivePatientId } from '@/lib/store'
 import RiskGauge from '@/components/RiskGauge'
 import { formatPercent, cn } from '@/lib/utils'
+
+// Debounce hook for slider changes
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedValue(value), delay)
+    return () => clearTimeout(timer)
+  }, [value, delay])
+  return debouncedValue
+}
 
 const presetScenarios = [
   {

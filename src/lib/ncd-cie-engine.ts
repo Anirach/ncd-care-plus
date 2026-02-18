@@ -1,7 +1,42 @@
 // NCD-CIE Risk Prediction Engine
 // Implements the NCD-CIE v16 paper's formulas exactly
+// Performance optimized with memoization and caching
 
-import { edges, topologicalOrder, getEdgesTo } from './knowledge-graph'
+import { edges, topologicalOrder, getEdgesTo, type KGEdge } from './knowledge-graph'
+
+// Memoization cache for expensive computations
+const edgesFromCache = new Map<string, KGEdge[]>()
+const edgesToCache = new Map<string, KGEdge[]>()
+
+// Pre-compute edge lookups for O(1) access
+function initializeEdgeCaches(): void {
+  if (edgesFromCache.size > 0) return // Already initialized
+  for (const edge of edges) {
+    // Cache edges by source
+    if (!edgesFromCache.has(edge.source)) {
+      edgesFromCache.set(edge.source, [])
+    }
+    edgesFromCache.get(edge.source)!.push(edge)
+
+    // Cache edges by target
+    if (!edgesToCache.has(edge.target)) {
+      edgesToCache.set(edge.target, [])
+    }
+    edgesToCache.get(edge.target)!.push(edge)
+  }
+}
+
+// Initialize caches on module load
+initializeEdgeCaches()
+
+// Fast edge lookup using cache
+function getCachedEdgesTo(nodeId: string): KGEdge[] {
+  return edgesToCache.get(nodeId) || []
+}
+
+function getCachedEdgesFrom(nodeId: string): KGEdge[] {
+  return edgesFromCache.get(nodeId) || []
+}
 
 export interface PatientProfile {
   id: string
@@ -118,16 +153,19 @@ function getPatientValue(profile: PatientProfile, nodeId: string): number {
 export function computeDiseaseRiskWithCI(profile: PatientProfile, diseaseId: string): RiskWithCI {
   const p = deriveConditions(profile)
   const intercept = diseaseIntercepts[diseaseId] ?? -2.5
-  const incomingEdges = getEdgesTo(diseaseId)
+  // Use cached edge lookup for O(1) instead of O(n) filter
+  const incomingEdges = getCachedEdgesTo(diseaseId)
 
   let logit = intercept
   let logitLow = intercept
   let logitHigh = intercept
 
-  for (const edge of incomingEdges) {
+  for (let i = 0; i < incomingEdges.length; i++) {
+    const edge = incomingEdges[i]
     const rawValue = getPatientValue(p, edge.source)
     const z = standardize(edge.source, rawValue)
-    logit += edge.weight * z
+    const weightZ = edge.weight * z
+    logit += weightZ
     if (z >= 0) {
       logitLow += edge.ci[0] * z
       logitHigh += edge.ci[1] * z
@@ -146,20 +184,20 @@ export function computeDiseaseRiskWithCI(profile: PatientProfile, diseaseId: str
 
 export function computeRiskContributions(profile: PatientProfile, diseaseId: string): RiskContribution[] {
   const p = deriveConditions(profile)
-  const incomingEdges = getEdgesTo(diseaseId)
-  const contributions: RiskContribution[] = []
+  // Use cached edge lookup
+  const incomingEdges = getCachedEdgesTo(diseaseId)
+  const contributions: RiskContribution[] = new Array(incomingEdges.length)
 
-  for (const edge of incomingEdges) {
+  for (let i = 0; i < incomingEdges.length; i++) {
+    const edge = incomingEdges[i]
     const rawValue = getPatientValue(p, edge.source)
     const z = standardize(edge.source, rawValue)
-    const contribution = edge.weight * z
-    const sourceNode = edges.find(e => e.source === edge.source)
-    contributions.push({
+    contributions[i] = {
       nodeId: edge.source,
       label: edge.source.toUpperCase(),
-      contribution,
+      contribution: edge.weight * z,
       zScore: z,
-    })
+    }
   }
 
   return contributions.sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
@@ -200,6 +238,51 @@ export interface CascadeResult {
   activatedEdges: string[]
 }
 
+// Pre-compute depth cache for BFS optimization
+const depthCache = new Map<string, Map<string, number>>()
+
+function getDepthCached(source: string, target: string): number {
+  // Check cache first
+  let sourceCache = depthCache.get(source)
+  if (sourceCache?.has(target)) {
+    return sourceCache.get(target)!
+  }
+
+  // BFS with cached edge lookups
+  const visited = new Set<string>()
+  const queue: { node: string; depth: number }[] = [{ node: source, depth: 0 }]
+  let result = D_MAX + 1
+
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    if (current.node === target) {
+      result = current.depth
+      break
+    }
+    if (current.depth >= D_MAX) continue
+    if (visited.has(current.node)) continue
+    visited.add(current.node)
+
+    // Use cached edge lookup instead of filter
+    const outEdges = getCachedEdgesFrom(current.node)
+    for (let i = 0; i < outEdges.length; i++) {
+      const e = outEdges[i]
+      if (!visited.has(e.target)) {
+        queue.push({ node: e.target, depth: current.depth + 1 })
+      }
+    }
+  }
+
+  // Cache result
+  if (!sourceCache) {
+    sourceCache = new Map<string, number>()
+    depthCache.set(source, sourceCache)
+  }
+  sourceCache.set(target, result)
+
+  return result
+}
+
 export function whatIfIntervention(
   baseProfile: PatientProfile,
   interventions: Partial<PatientProfile>
@@ -208,12 +291,18 @@ export function whatIfIntervention(
   const xINT: Record<string, number> = {}
   const deltas: Record<string, number> = {}
   const activatedEdges: string[] = []
+  const interventionKeys = Object.keys(interventions)
 
-  for (const nodeId of topologicalOrder) {
+  // Initialize xINT with base values
+  for (let i = 0; i < topologicalOrder.length; i++) {
+    const nodeId = topologicalOrder[i]
     xINT[nodeId] = getPatientValue(base, nodeId)
   }
 
-  for (const [key, value] of Object.entries(interventions)) {
+  // Apply interventions
+  for (let i = 0; i < interventionKeys.length; i++) {
+    const key = interventionKeys[i]
+    const value = interventions[key as keyof PatientProfile]
     if (value !== undefined) {
       const delta = (value as number) - (xINT[key] || 0)
       xINT[key] = value as number
@@ -221,41 +310,30 @@ export function whatIfIntervention(
     }
   }
 
-  function getDepth(source: string, target: string): number {
-    const visited = new Set<string>()
-    const queue: { node: string; depth: number }[] = [{ node: source, depth: 0 }]
-    while (queue.length > 0) {
-      const current = queue.shift()!
-      if (current.node === target) return current.depth
-      if (current.depth >= D_MAX) continue
-      visited.add(current.node)
-      const outEdges = edges.filter(e => e.source === current.node)
-      for (const e of outEdges) {
-        if (!visited.has(e.target)) {
-          queue.push({ node: e.target, depth: current.depth + 1 })
-        }
-      }
-    }
-    return D_MAX + 1
-  }
+  // Pre-compute attenuation factors
+  const gammaPowers = [1, GAMMA, GAMMA * GAMMA, GAMMA * GAMMA * GAMMA]
 
-  for (const nodeId of topologicalOrder) {
+  // Process nodes in topological order
+  for (let i = 0; i < topologicalOrder.length; i++) {
+    const nodeId = topologicalOrder[i]
     if (Object.prototype.hasOwnProperty.call(interventions, nodeId)) continue
 
-    const incomingEdges = edges.filter(e => e.target === nodeId)
+    // Use cached edge lookup
+    const incomingEdges = getCachedEdgesTo(nodeId)
     let totalDelta = 0
 
-    for (const edge of incomingEdges) {
+    for (let j = 0; j < incomingEdges.length; j++) {
+      const edge = incomingEdges[j]
       const parentDelta = (xINT[edge.source] ?? 0) - getPatientValue(base, edge.source)
       if (Math.abs(parentDelta) > 0.001) {
         let minDepth = D_MAX + 1
-        for (const intKey of Object.keys(interventions)) {
-          const d = getDepth(intKey, edge.source)
-          minDepth = Math.min(minDepth, d + 1)
+        for (let k = 0; k < interventionKeys.length; k++) {
+          const d = getDepthCached(interventionKeys[k], edge.source)
+          if (d + 1 < minDepth) minDepth = d + 1
         }
 
         if (minDepth <= D_MAX) {
-          const attenuation = Math.pow(GAMMA, minDepth)
+          const attenuation = gammaPowers[minDepth] ?? Math.pow(GAMMA, minDepth)
           const cascade = edge.weight * parentDelta * attenuation
           totalDelta += cascade
           if (Math.abs(cascade) > 0.001) {
@@ -271,28 +349,34 @@ export function whatIfIntervention(
     }
   }
 
+  // Build intervention profile
   const interventionProfile: PatientProfile = { ...baseProfile }
-  for (const [key, value] of Object.entries(interventions)) {
+  for (let i = 0; i < interventionKeys.length; i++) {
+    const key = interventionKeys[i]
+    const value = interventions[key as keyof PatientProfile]
     if (value !== undefined) {
       (interventionProfile as unknown as Record<string, number>)[key] = value as number
     }
   }
-  for (const [key, delta] of Object.entries(deltas)) {
+  const deltaKeys = Object.keys(deltas)
+  for (let i = 0; i < deltaKeys.length; i++) {
+    const key = deltaKeys[i]
     if (!Object.prototype.hasOwnProperty.call(interventions, key)) {
       (interventionProfile as unknown as Record<string, number>)[key] =
-        getPatientValue(base, key) + delta
+        getPatientValue(base, key) + deltas[key]
     }
   }
 
-  for (const key of Object.keys(interventions)) {
-    const outEdges = edges.filter(e => e.source === key)
-    for (const e of outEdges) {
-      activatedEdges.push(e.id)
+  // Add outgoing edges from interventions using cached lookup
+  for (let i = 0; i < interventionKeys.length; i++) {
+    const outEdges = getCachedEdgesFrom(interventionKeys[i])
+    for (let j = 0; j < outEdges.length; j++) {
+      activatedEdges.push(outEdges[j].id)
     }
   }
 
   const risks = computeAllRisksWithCI(interventionProfile)
-  return { interventionProfile, risks, deltas, activatedEdges: Array.from(new Set(activatedEdges)) }
+  return { interventionProfile, risks, deltas, activatedEdges: [...new Set(activatedEdges)] }
 }
 
 export function getRiskColor(risk: number): string {
