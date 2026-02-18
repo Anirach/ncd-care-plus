@@ -17,6 +17,10 @@ interface SimNode {
   fy?: number
 }
 
+// Canvas dimensions constant
+const CANVAS_WIDTH = 800
+const CANVAS_HEIGHT = 600
+
 export default function KnowledgeGraphPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [simNodes, setSimNodes] = useState<SimNode[]>([])
@@ -27,13 +31,24 @@ export default function KnowledgeGraphPage() {
   const [searchTerm, setSearchTerm] = useState('')
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
   const animRef = useRef<number>(0)
-  const dragRef = useRef<{ nodeId: string; startX: number; startY: number } | null>(null)
-  const panRef = useRef({ x: 0, y: 0, scale: 1, dragging: false, startX: 0, startY: 0 })
+
+  // Define getFilteredEdges first so it can be used in effects
+  const getFilteredEdges = useCallback(() => {
+    return edges.filter(e => {
+      if (domainFilter !== 'All' && e.domain !== domainFilter) return false
+      if (gradeFilter !== 'All' && e.evidenceGrade !== gradeFilter) return false
+      if (searchTerm) {
+        const src = nodes.find(n => n.id === e.source)
+        const tgt = nodes.find(n => n.id === e.target)
+        const term = searchTerm.toLowerCase()
+        return src?.label.toLowerCase().includes(term) || tgt?.label.toLowerCase().includes(term)
+      }
+      return true
+    })
+  }, [domainFilter, gradeFilter, searchTerm])
 
   // Initialize simulation
   useEffect(() => {
-    const width = 800
-    const height = 600
     const initialNodes: SimNode[] = nodes.map((n, i) => {
       const angle = (i / nodes.length) * 2 * Math.PI
       const domainIndex = Object.keys(domainColors).indexOf(n.domain)
@@ -43,8 +58,8 @@ export default function KnowledgeGraphPage() {
         label: n.label,
         domain: n.domain,
         type: n.type,
-        x: width / 2 + Math.cos(angle) * radius + (Math.random() - 0.5) * 50,
-        y: height / 2 + Math.sin(angle) * radius + (Math.random() - 0.5) * 50,
+        x: CANVAS_WIDTH / 2 + Math.cos(angle) * radius + (Math.random() - 0.5) * 50,
+        y: CANVAS_HEIGHT / 2 + Math.sin(angle) * radius + (Math.random() - 0.5) * 50,
         vx: 0,
         vy: 0,
       }
@@ -56,15 +71,13 @@ export default function KnowledgeGraphPage() {
   useEffect(() => {
     if (simNodes.length === 0) return
 
-    const width = 800
-    const height = 600
     const nodesCopy = simNodes.map(n => ({ ...n }))
 
     const simulate = () => {
       // Center gravity
       nodesCopy.forEach(n => {
-        n.vx += (width / 2 - n.x) * 0.001
-        n.vy += (height / 2 - n.y) * 0.001
+        n.vx += (CANVAS_WIDTH / 2 - n.x) * 0.001
+        n.vy += (CANVAS_HEIGHT / 2 - n.y) * 0.001
       })
 
       // Repulsion
@@ -107,13 +120,13 @@ export default function KnowledgeGraphPage() {
         else {
           n.vx *= 0.8
           n.x += n.vx
-          n.x = Math.max(30, Math.min(width - 30, n.x))
+          n.x = Math.max(30, Math.min(CANVAS_WIDTH - 30, n.x))
         }
         if (n.fy !== undefined) { n.y = n.fy; n.vy = 0 }
         else {
           n.vy *= 0.8
           n.y += n.vy
-          n.y = Math.max(30, Math.min(height - 30, n.y))
+          n.y = Math.max(30, Math.min(CANVAS_HEIGHT - 30, n.y))
         }
       })
 
@@ -123,22 +136,7 @@ export default function KnowledgeGraphPage() {
 
     animRef.current = requestAnimationFrame(simulate)
     return () => cancelAnimationFrame(animRef.current)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [domainFilter, gradeFilter])
-
-  const getFilteredEdges = useCallback(() => {
-    return edges.filter(e => {
-      if (domainFilter !== 'All' && e.domain !== domainFilter) return false
-      if (gradeFilter !== 'All' && e.evidenceGrade !== gradeFilter) return false
-      if (searchTerm) {
-        const src = nodes.find(n => n.id === e.source)
-        const tgt = nodes.find(n => n.id === e.target)
-        const term = searchTerm.toLowerCase()
-        return src?.label.toLowerCase().includes(term) || tgt?.label.toLowerCase().includes(term)
-      }
-      return true
-    })
-  }, [domainFilter, gradeFilter, searchTerm])
+  }, [simNodes.length, getFilteredEdges])
 
   // Canvas rendering
   useEffect(() => {
@@ -148,11 +146,11 @@ export default function KnowledgeGraphPage() {
     if (!ctx) return
 
     const dpr = window.devicePixelRatio || 1
-    canvas.width = 800 * dpr
-    canvas.height = 600 * dpr
+    canvas.width = CANVAS_WIDTH * dpr
+    canvas.height = CANVAS_HEIGHT * dpr
     ctx.scale(dpr, dpr)
 
-    ctx.clearRect(0, 0, 800, 600)
+    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT)
 
     const filteredEdges = getFilteredEdges()
     const connectedNodes = new Set<string>()

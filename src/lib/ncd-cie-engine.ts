@@ -112,7 +112,20 @@ function deriveConditions(profile: PatientProfile): PatientProfile {
 }
 
 function getPatientValue(profile: PatientProfile, nodeId: string): number {
-  return (profile as unknown as Record<string, number>)[nodeId] ?? 0
+  const value = profile[nodeId as keyof PatientProfile]
+  return typeof value === 'number' ? value : 0
+}
+
+function setPatientValue(profile: PatientProfile, key: string, value: number): void {
+  // Type-safe assignment for known numeric fields
+  const numericKeys = [
+    'age', 'sex', 'sbp', 'dbp', 'ldl', 'hdl', 'tc', 'tg', 'hba1c', 'fpg',
+    'bmi', 'egfr', 'smoking', 'exercise', 'alcohol', 'diet', 'statin',
+    'htn_med', 'sglt2i', 'metformin', 'aspirin', 'ace_arb', 'diabetes', 'hypertension'
+  ] as const
+  if (numericKeys.includes(key as typeof numericKeys[number])) {
+    (profile as Record<string, unknown>)[key] = value
+  }
 }
 
 export function computeDiseaseRiskWithCI(profile: PatientProfile, diseaseId: string): RiskWithCI {
@@ -189,9 +202,10 @@ export function computeAllRisksWithCI(profile: PatientProfile): FullRiskResult {
   }
 }
 
-// What-If Intervention Cascade
-const GAMMA = 0.7
-const D_MAX = 3
+// What-If Intervention Cascade - using constants for configuration
+import { CASCADE_PARAMS, RISK_THRESHOLDS, RISK_COLORS } from './constants'
+
+const { GAMMA, D_MAX, DELTA_THRESHOLD } = CASCADE_PARAMS
 
 export interface CascadeResult {
   interventionProfile: PatientProfile
@@ -214,9 +228,9 @@ export function whatIfIntervention(
   }
 
   for (const [key, value] of Object.entries(interventions)) {
-    if (value !== undefined) {
-      const delta = (value as number) - (xINT[key] || 0)
-      xINT[key] = value as number
+    if (typeof value === 'number') {
+      const delta = value - (xINT[key] || 0)
+      xINT[key] = value
       deltas[key] = delta
     }
   }
@@ -247,7 +261,7 @@ export function whatIfIntervention(
 
     for (const edge of incomingEdges) {
       const parentDelta = (xINT[edge.source] ?? 0) - getPatientValue(base, edge.source)
-      if (Math.abs(parentDelta) > 0.001) {
+      if (Math.abs(parentDelta) > DELTA_THRESHOLD) {
         let minDepth = D_MAX + 1
         for (const intKey of Object.keys(interventions)) {
           const d = getDepth(intKey, edge.source)
@@ -258,14 +272,14 @@ export function whatIfIntervention(
           const attenuation = Math.pow(GAMMA, minDepth)
           const cascade = edge.weight * parentDelta * attenuation
           totalDelta += cascade
-          if (Math.abs(cascade) > 0.001) {
+          if (Math.abs(cascade) > DELTA_THRESHOLD) {
             activatedEdges.push(edge.id)
           }
         }
       }
     }
 
-    if (Math.abs(totalDelta) > 0.001) {
+    if (Math.abs(totalDelta) > DELTA_THRESHOLD) {
       xINT[nodeId] = getPatientValue(base, nodeId) + totalDelta
       deltas[nodeId] = totalDelta
     }
@@ -273,14 +287,13 @@ export function whatIfIntervention(
 
   const interventionProfile: PatientProfile = { ...baseProfile }
   for (const [key, value] of Object.entries(interventions)) {
-    if (value !== undefined) {
-      (interventionProfile as unknown as Record<string, number>)[key] = value as number
+    if (typeof value === 'number') {
+      setPatientValue(interventionProfile, key, value)
     }
   }
   for (const [key, delta] of Object.entries(deltas)) {
     if (!Object.prototype.hasOwnProperty.call(interventions, key)) {
-      (interventionProfile as unknown as Record<string, number>)[key] =
-        getPatientValue(base, key) + delta
+      setPatientValue(interventionProfile, key, getPatientValue(base, key) + delta)
     }
   }
 
@@ -296,23 +309,23 @@ export function whatIfIntervention(
 }
 
 export function getRiskColor(risk: number): string {
-  if (risk < 0.10) return '#22c55e'
-  if (risk < 0.20) return '#eab308'
-  if (risk < 0.30) return '#f97316'
-  return '#ef4444'
+  if (risk < RISK_THRESHOLDS.LOW) return RISK_COLORS.LOW
+  if (risk < RISK_THRESHOLDS.MODERATE) return RISK_COLORS.MODERATE
+  if (risk < RISK_THRESHOLDS.HIGH) return RISK_COLORS.HIGH
+  return RISK_COLORS.VERY_HIGH
 }
 
 export function getRiskLevel(risk: number): 'Low' | 'Moderate' | 'High' | 'Very High' {
-  if (risk < 0.10) return 'Low'
-  if (risk < 0.20) return 'Moderate'
-  if (risk < 0.30) return 'High'
+  if (risk < RISK_THRESHOLDS.LOW) return 'Low'
+  if (risk < RISK_THRESHOLDS.MODERATE) return 'Moderate'
+  if (risk < RISK_THRESHOLDS.HIGH) return 'High'
   return 'Very High'
 }
 
 export function getRiskBgClass(risk: number): string {
-  if (risk < 0.10) return 'bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800'
-  if (risk < 0.20) return 'bg-yellow-50 dark:bg-yellow-950 border-yellow-200 dark:border-yellow-800'
-  if (risk < 0.30) return 'bg-orange-50 dark:bg-orange-950 border-orange-200 dark:border-orange-800'
+  if (risk < RISK_THRESHOLDS.LOW) return 'bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800'
+  if (risk < RISK_THRESHOLDS.MODERATE) return 'bg-yellow-50 dark:bg-yellow-950 border-yellow-200 dark:border-yellow-800'
+  if (risk < RISK_THRESHOLDS.HIGH) return 'bg-orange-50 dark:bg-orange-950 border-orange-200 dark:border-orange-800'
   return 'bg-red-50 dark:bg-red-950 border-red-200 dark:border-red-800'
 }
 

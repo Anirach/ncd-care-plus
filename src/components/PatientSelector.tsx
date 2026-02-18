@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { type PatientProfile } from '@/lib/ncd-cie-engine'
 import { loadPatients, getActivePatientId, setActivePatientId } from '@/lib/store'
 import { cn } from '@/lib/utils'
@@ -14,15 +14,24 @@ export default function PatientSelector({ onSelect, selected }: PatientSelectorP
   const [patients, setPatients] = useState<PatientProfile[]>([])
   const [activeId, setActiveId] = useState<string>('')
 
+  // Use ref to track if initial selection has been made
+  const initializedRef = useRef(false)
+
+  // Memoize onSelect to avoid unnecessary rerenders
+  const stableOnSelect = useCallback(onSelect, [onSelect])
+
   useEffect(() => {
+    // Only run initialization once
+    if (initializedRef.current) return
+    initializedRef.current = true
+
     const p = loadPatients()
     setPatients(p)
     const id = selected || getActivePatientId()
     setActiveId(id)
     const active = p.find(pt => pt.id === id) || p[0]
-    if (active) onSelect(active)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    if (active) stableOnSelect(active)
+  }, [selected, stableOnSelect])
 
   const handleSelect = (patient: PatientProfile) => {
     setActiveId(patient.id)

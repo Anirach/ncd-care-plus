@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { type PatientProfile, demoPatients, biomarkerRanges } from '@/lib/ncd-cie-engine'
 import { loadPatients, savePatients, getActivePatientId, setActivePatientId } from '@/lib/store'
+import { getPatientNumericValue, type PatientProfileKey } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const labSections = [
@@ -120,13 +121,6 @@ export default function ProfilePage() {
 
   if (!patient) return <div className="animate-pulse h-96 bg-slate-200 dark:bg-slate-800 rounded-xl" />
 
-  const getStatus = (key: string, value: number): string => {
-    const range = biomarkerRanges[key]
-    if (!range) return 'normal'
-    // Simple status check based on some common thresholds
-    return 'normal'
-  }
-
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
@@ -168,55 +162,56 @@ export default function ProfilePage() {
               <span>{section.icon}</span> {section.title}
             </h3>
             <div className="space-y-3">
-              {section.fields.map(field => (
-                <div key={field.key}>
-                  {field.type === 'number' && (
-                    <div>
-                      <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block">{field.label}</label>
-                      <input
-                        type="number"
-                        value={(patient as unknown as Record<string, number>)[field.key] ?? 0}
-                        onChange={e => updateField(field.key, parseFloat(e.target.value) || 0)}
-                        step={biomarkerRanges[field.key]?.step || 1}
-                        className="input-clinical"
-                      />
-                    </div>
-                  )}
-                  {field.type === 'select' && (
-                    <div>
-                      <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block">{field.label}</label>
-                      <select
-                        value={(patient as unknown as Record<string, number>)[field.key] ?? 0}
-                        onChange={e => updateField(field.key, parseFloat(e.target.value))}
-                        className="input-clinical"
-                      >
-                        {field.options?.map(opt => (
-                          <option key={opt.value} value={opt.value}>{opt.label}</option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                  {field.type === 'toggle' && (
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-slate-600 dark:text-slate-400">{field.label}</span>
-                      <button
-                        onClick={() => updateField(field.key, (patient as unknown as Record<string, number>)[field.key] ? 0 : 1)}
-                        className={cn(
-                          'relative w-11 h-6 rounded-full transition-colors',
-                          (patient as unknown as Record<string, number>)[field.key]
-                            ? 'bg-clinical-600'
-                            : 'bg-slate-300 dark:bg-slate-600'
-                        )}
-                      >
-                        <div className={cn(
-                          'absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform',
-                          (patient as unknown as Record<string, number>)[field.key] ? 'translate-x-5' : 'translate-x-0.5'
-                        )} />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))}
+              {section.fields.map(field => {
+                const fieldValue = getPatientNumericValue(patient, field.key as PatientProfileKey)
+                return (
+                  <div key={field.key}>
+                    {field.type === 'number' && (
+                      <div>
+                        <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block">{field.label}</label>
+                        <input
+                          type="number"
+                          value={fieldValue}
+                          onChange={e => updateField(field.key, parseFloat(e.target.value) || 0)}
+                          step={biomarkerRanges[field.key]?.step || 1}
+                          className="input-clinical"
+                        />
+                      </div>
+                    )}
+                    {field.type === 'select' && (
+                      <div>
+                        <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block">{field.label}</label>
+                        <select
+                          value={fieldValue}
+                          onChange={e => updateField(field.key, parseFloat(e.target.value))}
+                          className="input-clinical"
+                        >
+                          {field.options?.map(opt => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    {field.type === 'toggle' && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-slate-600 dark:text-slate-400">{field.label}</span>
+                        <button
+                          onClick={() => updateField(field.key, fieldValue ? 0 : 1)}
+                          className={cn(
+                            'relative w-11 h-6 rounded-full transition-colors',
+                            fieldValue ? 'bg-clinical-600' : 'bg-slate-300 dark:bg-slate-600'
+                          )}
+                        >
+                          <div className={cn(
+                            'absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform',
+                            fieldValue ? 'translate-x-5' : 'translate-x-0.5'
+                          )} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </div>
         ))}
